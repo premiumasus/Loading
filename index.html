@@ -362,6 +362,28 @@
     setTimeout(() => showScreen('login'), 900);
   });
 
+  // ---------- Local storage "database" ----------
+  // Everything lives in one localStorage key so the page works as a
+  // plain standalone website (no server, no external account needed).
+  const DB_KEY = 'codevault_db_v1';
+
+  function loadDb(){
+    try{
+      const raw = localStorage.getItem(DB_KEY);
+      if(!raw) return { users: {}, snippets: {} };
+      const parsed = JSON.parse(raw);
+      if(!parsed.users) parsed.users = {};
+      if(!parsed.snippets) parsed.snippets = {};
+      return parsed;
+    }catch(e){
+      return { users: {}, snippets: {} };
+    }
+  }
+
+  function saveDb(db){
+    localStorage.setItem(DB_KEY, JSON.stringify(db));
+  }
+
   // ---------- Auth ----------
   async function handleSignup(){
     clearMsg('signup-msg');
@@ -379,24 +401,23 @@
     }
 
     try{
-      let existing = null;
-      try{
-        existing = await window.storage.get('user:' + user, false);
-      }catch(e){ existing = null; }
+      const db = loadDb();
 
-      if(existing){
+      if(db.users[user]){
         showMsg('signup-msg', 'มีชื่อผู้ใช้นี้อยู่แล้ว', 'err');
         return;
       }
 
-      await window.storage.set('user:' + user, JSON.stringify({ password: pass, createdAt: Date.now() }), false);
+      db.users[user] = { password: pass, createdAt: Date.now() };
+      saveDb(db);
+
       showMsg('signup-msg', 'สมัครสมาชิกสำเร็จ กำลังพาไปหน้าเข้าสู่ระบบ...', 'ok');
       setTimeout(() => {
         document.getElementById('login-user').value = user;
         showScreen('login');
       }, 900);
     }catch(err){
-      showMsg('signup-msg', 'สมัครสมาชิกไม่สำเร็จ ลองใหม่อีกครั้ง', 'err');
+      showMsg('signup-msg', 'สมัครสมาชิกไม่สำเร็จ เบราว์เซอร์นี้อาจไม่รองรับการเก็บข้อมูล', 'err');
     }
   }
 
@@ -411,17 +432,14 @@
     }
 
     try{
-      let record = null;
-      try{
-        record = await window.storage.get('user:' + user, false);
-      }catch(e){ record = null; }
+      const db = loadDb();
+      const record = db.users[user];
 
       if(!record){
         showMsg('login-msg', 'ไม่พบบัญชีนี้ ลองสมัครสมาชิกก่อน', 'err');
         return;
       }
-      const data = JSON.parse(record.value);
-      if(data.password !== pass){
+      if(record.password !== pass){
         showMsg('login-msg', 'รหัสผ่านไม่ถูกต้อง', 'err');
         return;
       }
@@ -432,7 +450,7 @@
       resetEditor();
       loadSnippetList();
     }catch(err){
-      showMsg('login-msg', 'เข้าสู่ระบบไม่สำเร็จ ลองใหม่อีกครั้ง', 'err');
+      showMsg('login-msg', 'เข้าสู่ระบบไม่สำเร็จ เบราว์เซอร์นี้อาจไม่รองรับการเก็บข้อมูล', 'err');
     }
   }
 
@@ -453,11 +471,7 @@
     clearMsg('vault-msg');
   }
 
-  function snippetKey(name){
-    return 'snippet:' + currentUser + ':' + name;
-  }
-
-  async function saveSnippet(){
+  function saveSnippet(){
     clearMsg('vault-msg');
     const name = document.getElementById('snippet-name').value.trim();
     const code = document.getElementById('snippet-code').value;
@@ -472,14 +486,18 @@
     }
 
     try{
-      await window.storage.set(snippetKey(name), JSON.stringify({ code: code, updatedAt: Date.now() }), false);
+      const db = loadDb();
+      if(!db.snippets[currentUser]) db.snippets[currentUser] = {};
+      db.snippets[currentUser][name] = { code: code, updatedAt: Date.now() };
+      saveDb(db);
+
       editingName = name;
       document.getElementById('editor-mode-label').textContent = 'กำลังแก้ไข: ' + name;
       showMsg('vault-msg', 'บันทึกแล้ว', 'ok');
       toast('บันทึก "' + name + '" เรียบร้อย');
       loadSnippetList();
     }catch(err){
-      showMsg('vault-msg', 'บันทึกไม่สำเร็จ ลองใหม่อีกครั้ง', 'err');
+      showMsg('vault-msg', 'บันทึกไม่สำเร็จ เบราว์เซอร์นี้อาจไม่รองรับการเก็บข้อมูล', 'err');
     }
   }
 
@@ -497,23 +515,21 @@
     }
   }
 
-  async function loadSnippetList(){
+  function loadSnippetList(){
     const listEl = document.getElementById('snippet-list');
-    listEl.innerHTML = '<div class="empty-state">กำลังโหลด...</div>';
 
     try{
-      const result = await window.storage.list('snippet:' + currentUser + ':', false);
-      const keys = (result && result.keys) ? result.keys : [];
+      const db = loadDb();
+      const userSnippets = db.snippets[currentUser] || {};
+      const names = Object.keys(userSnippets);
 
-      if(keys.length === 0){
+      if(names.length === 0){
         listEl.innerHTML = '<div class="empty-state">ยังไม่มีโค้ดที่บันทึกไว้</div>';
         return;
       }
 
-      const prefix = 'snippet:' + currentUser + ':';
       listEl.innerHTML = '';
-      keys.slice().sort().forEach((key) => {
-        const name = key.startsWith(prefix) ? key.slice(prefix.length) : key;
+      names.sort().forEach((name) => {
         const item = document.createElement('div');
         item.className = 'snippet-item';
         item.innerHTML =
@@ -531,18 +547,18 @@
     }
   }
 
-  async function loadSnippetIntoEditor(name){
+  function loadSnippetIntoEditor(name){
     try{
-      const result = await window.storage.get(snippetKey(name), false);
-      if(!result){
+      const db = loadDb();
+      const record = (db.snippets[currentUser] || {})[name];
+      if(!record){
         showMsg('vault-msg', 'ไม่พบโค้ดนี้แล้ว', 'err');
         loadSnippetList();
         return;
       }
-      const data = JSON.parse(result.value);
       editingName = name;
       document.getElementById('snippet-name').value = name;
-      document.getElementById('snippet-code').value = data.code;
+      document.getElementById('snippet-code').value = record.code;
       document.getElementById('editor-mode-label').textContent = 'กำลังแก้ไข: ' + name;
       clearMsg('vault-msg');
       window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -551,9 +567,13 @@
     }
   }
 
-  async function deleteSnippet(name){
+  function deleteSnippet(name){
     try{
-      await window.storage.delete(snippetKey(name), false);
+      const db = loadDb();
+      if(db.snippets[currentUser]){
+        delete db.snippets[currentUser][name];
+        saveDb(db);
+      }
       toast('ลบ "' + name + '" แล้ว');
       if(editingName === name){
         resetEditor();
