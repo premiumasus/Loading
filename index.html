@@ -246,6 +246,21 @@
   .switch-line a{ color: #ffffff; text-decoration:none; cursor:pointer; border-bottom: 1px solid transparent; }
   .switch-line a:hover{ border-bottom-color: #ffffff; }
 
+  .back-link{
+    display:inline-flex;
+    align-items:center;
+    gap:6px;
+    color: var(--muted);
+    text-decoration:none;
+    font-size:13px;
+    margin-bottom: 18px;
+    transition: color .15s ease, transform .15s ease;
+  }
+  .back-link:hover{ color:#ffffff; transform: translateX(-3px); }
+
+  .danger-outline{ border-color: var(--danger); color: var(--danger); }
+  .danger-outline:hover{ background: var(--danger); color:#ffffff; box-shadow: 0 0 14px rgba(255,92,92,0.35); }
+
   .msg{
     font-size: 13px;
     padding: 10px 12px;
@@ -445,17 +460,57 @@
     </div>
   </div>
 
+  <!-- EDIT (dedicated page reached via a real link, like opening a file to edit on GitHub) -->
+  <div class="stage" id="screen-edit" style="display:none;">
+    <div class="card">
+      <a class="back-link" href="#vault">← กลับไปที่ห้องเก็บโค้ด</a>
+      <p class="panel-title" id="edit-page-title">กำลังแก้ไข</p>
+
+      <label for="edit-snippet-name">ชื่อโค้ด</label>
+      <input type="text" id="edit-snippet-name">
+
+      <label for="edit-snippet-code">โค้ด</label>
+      <textarea id="edit-snippet-code"></textarea>
+
+      <div class="btn-row">
+        <button class="btn btn-primary" onclick="saveEditedSnippet()">บันทึกการแก้ไข</button>
+        <button class="btn btn-ghost" onclick="copyEditedCode()">คัดลอกโค้ด</button>
+      </div>
+      <div class="btn-row">
+        <button class="btn btn-ghost danger-outline" onclick="deleteFromEditPage()">ลบโค้ดนี้</button>
+      </div>
+      <div class="msg" id="edit-msg"></div>
+    </div>
+  </div>
+
   <div class="toast" id="toast"></div>
 
 <script>
   let currentUser = null;
-  let editingName = null; // name currently loaded into the editor, if any
+  let editingName = null; // name currently loaded into the "add new" editor, if any
+  let currentEditName = null; // name of the snippet open on the dedicated edit page
+
+  window.addEventListener('hashchange', renderRoute);
+
+  function renderRoute(){
+    if(!currentUser) return; // not logged in yet, ignore deep links
+    const hash = location.hash.replace(/^#/, '');
+    if(hash.indexOf('edit/') === 0){
+      const name = decodeURIComponent(hash.slice(5));
+      openEditPage(name);
+    } else {
+      showScreen('vault');
+      resetEditor();
+      loadSnippetList();
+    }
+  }
 
   function showScreen(name){
     document.getElementById('screen-loading').style.display = 'none';
     document.getElementById('screen-login').style.display = 'none';
     document.getElementById('screen-signup').style.display = 'none';
     document.getElementById('screen-vault').style.display = 'none';
+    document.getElementById('screen-edit').style.display = 'none';
     const el = document.getElementById('screen-' + name);
     el.style.display = 'block';
     el.classList.remove('entering');
@@ -571,6 +626,7 @@
       showScreen('vault');
       resetEditor();
       loadSnippetList();
+      if(location.hash !== '#vault'){ history.replaceState(null, '', '#vault'); }
     }catch(err){
       showMsg('login-msg', 'เข้าสู่ระบบไม่สำเร็จ เบราว์เซอร์นี้อาจไม่รองรับการเก็บข้อมูล', 'err');
     }
@@ -579,8 +635,10 @@
   function handleLogout(){
     currentUser = null;
     editingName = null;
+    currentEditName = null;
     document.getElementById('login-user').value = '';
     document.getElementById('login-pass').value = '';
+    history.replaceState(null, '', location.pathname + location.search);
     showScreen('login');
   }
 
@@ -660,7 +718,9 @@
             '<button class="icon-btn" data-action="edit">Rew</button>' +
             '<button class="icon-btn danger" data-action="delete">ลบ</button>' +
           '</span>';
-        item.querySelector('[data-action="edit"]').onclick = () => loadSnippetIntoEditor(name);
+        item.querySelector('[data-action="edit"]').onclick = () => {
+          location.hash = 'edit/' + encodeURIComponent(name);
+        };
         item.querySelector('[data-action="delete"]').onclick = () => deleteSnippet(name);
         listEl.appendChild(item);
       });
@@ -669,23 +729,83 @@
     }
   }
 
-  function loadSnippetIntoEditor(name){
+  function openEditPage(name){
     try{
       const db = loadDb();
       const record = (db.snippets[currentUser] || {})[name];
       if(!record){
-        showMsg('vault-msg', 'ไม่พบโค้ดนี้แล้ว', 'err');
-        loadSnippetList();
+        toast('ไม่พบโค้ดนี้แล้ว');
+        location.hash = 'vault';
         return;
       }
-      editingName = name;
-      document.getElementById('snippet-name').value = name;
-      document.getElementById('snippet-code').value = record.code;
-      document.getElementById('editor-mode-label').textContent = 'กำลังแก้ไข: ' + name;
-      clearMsg('vault-msg');
-      window.scrollTo({ top: 0, behavior: 'smooth' });
+      currentEditName = name;
+      document.getElementById('edit-page-title').textContent = 'กำลังแก้ไข: ' + name;
+      document.getElementById('edit-snippet-name').value = name;
+      document.getElementById('edit-snippet-code').value = record.code;
+      clearMsg('edit-msg');
+      showScreen('edit');
     }catch(err){
-      showMsg('vault-msg', 'โหลดโค้ดไม่สำเร็จ', 'err');
+      toast('เปิดโค้ดไม่สำเร็จ');
+      location.hash = 'vault';
+    }
+  }
+
+  function saveEditedSnippet(){
+    clearMsg('edit-msg');
+    const newName = document.getElementById('edit-snippet-name').value.trim();
+    const code = document.getElementById('edit-snippet-code').value;
+
+    if(!newName){
+      showMsg('edit-msg', 'กรุณาตั้งชื่อโค้ด', 'err');
+      return;
+    }
+    if(!code){
+      showMsg('edit-msg', 'ยังไม่มีโค้ดให้บันทึก', 'err');
+      return;
+    }
+
+    try{
+      const db = loadDb();
+      if(!db.snippets[currentUser]) db.snippets[currentUser] = {};
+      if(currentEditName && currentEditName !== newName){
+        delete db.snippets[currentUser][currentEditName];
+      }
+      db.snippets[currentUser][newName] = { code: code, updatedAt: Date.now() };
+      saveDb(db);
+
+      toast('บันทึก "' + newName + '" เรียบร้อย');
+      setTimeout(() => { location.hash = 'vault'; }, 500);
+    }catch(err){
+      showMsg('edit-msg', 'บันทึกไม่สำเร็จ เบราว์เซอร์นี้อาจไม่รองรับการเก็บข้อมูล', 'err');
+    }
+  }
+
+  async function copyEditedCode(){
+    const code = document.getElementById('edit-snippet-code').value;
+    if(!code){
+      showMsg('edit-msg', 'ไม่มีโค้ดให้คัดลอก', 'err');
+      return;
+    }
+    try{
+      await navigator.clipboard.writeText(code);
+      toast('คัดลอกโค้ดแล้ว');
+    }catch(err){
+      showMsg('edit-msg', 'คัดลอกไม่สำเร็จ กรุณาคัดลอกด้วยตนเอง', 'err');
+    }
+  }
+
+  function deleteFromEditPage(){
+    if(!currentEditName) return;
+    try{
+      const db = loadDb();
+      if(db.snippets[currentUser]){
+        delete db.snippets[currentUser][currentEditName];
+        saveDb(db);
+      }
+      toast('ลบ "' + currentEditName + '" แล้ว');
+      location.hash = 'vault';
+    }catch(err){
+      showMsg('edit-msg', 'ลบไม่สำเร็จ', 'err');
     }
   }
 
